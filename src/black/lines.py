@@ -18,6 +18,7 @@ from black.nodes import (
     is_multiline_string,
     is_one_sequence_between,
     is_type_comment,
+    normalize_type_comment,
     is_type_ignore_comment,
     is_with_or_async_with_stmt,
     make_simple_prefix,
@@ -62,6 +63,11 @@ class Line:
 
         Inline comments are put aside.
         """
+
+        # Normalize type comments before processing
+        if leaf.type in {token.COMMENT, STANDALONE_COMMENT}:
+            normalize_type_comment(leaf)
+
         has_value = (
             leaf.type in BRACKETS
             # empty fstring-middles must not be truncated
@@ -97,6 +103,10 @@ class Line:
         Raises ValueError when any `leaf` is appended after a standalone comment
         or when a standalone comment is not the first leaf on the line.
         """
+         # Normalize type comments before appending
+        if leaf.type in {token.COMMENT, STANDALONE_COMMENT}:
+            normalize_type_comment(leaf)
+
         if (
             self.bracket_tracker.depth == 0
             or self.bracket_tracker.any_open_for_or_lambda()
@@ -379,6 +389,11 @@ class Line:
 
     def append_comment(self, comment: Leaf) -> bool:
         """Add an inline or standalone comment to the line."""
+
+        # Normalize type comments before deciding placement
+        if comment.type in {token.COMMENT, STANDALONE_COMMENT}:
+            normalize_type_comment(comment)
+
         if (
             comment.type == STANDALONE_COMMENT
             and self.bracket_tracker.any_open_brackets()

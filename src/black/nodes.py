@@ -2,6 +2,7 @@
 blib2to3 Node/Leaf transformation-related utility functions.
 """
 
+import re
 import sys
 from collections.abc import Iterator
 from typing import Final, Generic, Literal, Optional, TypeVar, Union
@@ -920,15 +921,27 @@ def is_async_stmt_or_funcdef(leaf: Leaf) -> bool:
     )
 
 
-def is_type_comment(leaf: Leaf) -> bool:
+def is_type_comment(leaf: Leaf, suffix: str = "") -> bool:
     """Return True if the given leaf is a type comment. This function should only
     be used for general type comments (excluding ignore annotations, which should
     use `is_type_ignore_comment`). Note that general type comments are no longer
     used in modern version of Python, this function may be deprecated in the future."""
     t = leaf.type
     v = leaf.value
-    return t in {token.COMMENT, STANDALONE_COMMENT} and v.startswith("# type:")
+    # Match "# type:" with optional spaces after "#" and before "type:"
+    pattern = r"^#\s*type\s*:" + re.escape(suffix)
+    return t in {token.COMMENT, STANDALONE_COMMENT} and re.match(pattern, v) is not None
 
+def normalize_type_comment(leaf: Leaf) -> None:
+    """Normalize the formatting of a type comment."""
+    if not is_type_comment(leaf):
+        return
+    # Extract the type annotation part after "# type:"
+    match = re.match(r"^#\s*type\s*:\s*(.+)$", leaf.value.strip())
+    if match:
+        annotation = match.group(1).strip()  # Remove leading/trailing spaces from annotation
+        leaf.value = f"# type: {annotation}"  # Standardize to "# type: <annotation>"
+        
 
 def is_type_ignore_comment(leaf: Leaf) -> bool:
     """Return True if the given leaf is a type comment with ignore annotation."""
