@@ -1226,7 +1226,6 @@ def _format_str_once(
     else:
         future_imports = get_future_imports(src_node)
         versions = detect_target_versions(src_node, future_imports=future_imports)
-
     context_manager_features = {
         feature
         for feature in {Feature.PARENTHESIZED_CONTEXT_MANAGERS}

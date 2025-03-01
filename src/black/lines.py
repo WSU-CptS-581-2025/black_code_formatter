@@ -597,12 +597,10 @@ class EmptyLineTracker:
         if current_line.is_comment:
             if self.previous_line is None or (
                 not self.previous_line.is_decorator
-                # `or before` means this comment already has an empty line before
                 and (not self.previous_line.is_comment or before)
                 and (self.semantic_leading_comment is None or before)
             ):
                 self.semantic_leading_comment = block
-        # `or before` means this decorator already has an empty line before
         elif not current_line.is_decorator or before:
             self.semantic_leading_comment = None
 
@@ -650,7 +648,6 @@ class EmptyLineTracker:
                 if previous_def.is_class and not previous_def.is_stub_class:
                     before = 1
                 elif depth and not current_line.is_def and self.previous_line.is_def:
-                    # Empty lines between attributes and methods should be preserved.
                     before = 1 if user_had_newline else 0
                 elif depth:
                     before = 0
@@ -668,13 +665,6 @@ class EmptyLineTracker:
                         not in ("with", "try", "for", "while", "if", "match")
                     )
                 ):
-                    # We shouldn't add two newlines between an indented function and
-                    # a dependent non-indented clause. This is to avoid issues with
-                    # conditional function definitions that are technically top-level
-                    # and therefore get two trailing newlines, but look weird and
-                    # inconsistent when they're followed by elif, else, etc. This is
-                    # worse because these functions only get *one* preceding newline
-                    # already.
                     before = 1
                 else:
                     before = 2
@@ -703,7 +693,7 @@ class EmptyLineTracker:
 
         return before, 0
 
-    def _maybe_empty_lines_for_class_or_def(  # noqa: C901
+    def _maybe_empty_lines_for_class_or_def(
         self, current_line: Line, before: int, user_had_newline: bool
     ) -> tuple[int, int]:
         assert self.previous_line is not None
@@ -746,34 +736,38 @@ class EmptyLineTracker:
                 elif self.previous_line.depth > current_line.depth:
                     newlines = 1
                 elif current_line.is_stub_class and self.previous_line.is_stub_class:
-                    # No blank line between classes with an empty body
                     newlines = 0
                 else:
                     newlines = 1
-            # Don't inspect the previous line if it's part of the body of the previous
-            # statement in the same level, we always want a blank line if there's
-            # something with a body preceding.
             elif self.previous_line.depth > current_line.depth:
                 newlines = 1
             elif (
                 current_line.is_def or current_line.is_decorator
             ) and not self.previous_line.is_def:
                 if current_line.depth:
-                    # In classes empty lines between attributes and methods should
-                    # be preserved.
                     newlines = min(1, before)
                 else:
-                    # Blank line between a block of functions (maybe with preceding
-                    # decorators) and a block of non-functions
                     newlines = 1
             else:
                 newlines = 0
         else:
-            newlines = 1 if current_line.depth else 2
-            # If a user has left no space after a dummy implementation, don't insert
-            # new lines. This is useful for instance for @overload or Protocols.
-            if self.previous_line.is_stub_def and not user_had_newline:
-                newlines = 0
+            # Always enforce two newlines between top-level classes, regardless of stub defs
+            if (
+                current_line.is_class
+                and self.previous_line.is_class
+                and current_line.depth == 0
+                and self.previous_line.depth == 0
+            ):
+                newlines = 2
+            else:
+                newlines = 1 if current_line.depth else 2
+                # Only suppress newlines after stub defs if not followed by a top-level class
+                if (
+                    self.previous_line.is_stub_def
+                    and not user_had_newline
+                    and not (current_line.is_class and current_line.depth == 0)
+                ):
+                    newlines = 0
         if comment_to_add_newlines is not None:
             previous_block = comment_to_add_newlines.previous_block
             if previous_block is not None:
