@@ -365,6 +365,7 @@ return not (this or that)
 decision = (maybe.this() and values > 0) or (maybe.that() and values < 0)
 ```
 
+In some cases, users might want to add parathesis to expressions that only have single tuple element like ```yield y,```, ```return y,```, black will parathesize these into ```yield (y,)```, ```return (y,)```
 ### Call chains
 
 Some popular APIs, like ORMs, use call chaining. This API style is known as a
