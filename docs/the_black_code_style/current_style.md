@@ -503,3 +503,23 @@ code behaves the way it did before it got reformatted. We treat this as a featur
 there are no plans to relax this in the future. The exceptions enumerated above stem
 from either user feedback or implementation details of the tool. In each case we made
 due diligence to ensure that the AST divergence is of no practical consequence.
+
+### Ellipses:
+Black can also format correctly to functions which end with ellipses:
+
+Input
+```python
+class Foo:
+    def test(): ...
+class Bar:
+    pass
+```
+Output: 
+```python
+class Foo:
+    def test(): ...
+
+
+class Bar:
+    pass
+```
