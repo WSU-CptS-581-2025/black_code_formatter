@@ -7,7 +7,7 @@
 
 [tool.black]
 line-length = 88
-target-version = ['py39']
+target-version = ['py37', 'py38', 'py39', 'py310', 'py311', 'py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -17,10 +17,6 @@ extend-exclude = '''
   | scripts/generate_schema.py  # Uses match syntax
 )
 '''
-# We use the unstable style for formatting Black itself. If you
-# want bug-free formatting, you should keep this off. If you want
-# stable formatting across releases, you should also keep `preview = true`
-# (which is implied by this flag) off.
 unstable = true
 
 # Build system information and other project-specific configuration below.
