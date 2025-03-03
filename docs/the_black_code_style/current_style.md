@@ -523,3 +523,14 @@ class Foo:
 class Bar:
     pass
 ```
+### Typed-ast comment:
+Black can also format typed-ast comment as type comment even if there are multiple empty space after #. 
+
+Input:
+```python
+x = 1  #   type:   int
+```
+Output:
+```python
+x = 1  # type: int
+```
