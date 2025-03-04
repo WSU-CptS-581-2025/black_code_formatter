@@ -6,6 +6,8 @@ import sys
 from collections.abc import Iterator
 from typing import Final, Generic, Literal, Optional, TypeVar, Union
 
+import re
+
 if sys.version_info >= (3, 10):
     from typing import TypeGuard
 else:
@@ -924,10 +926,21 @@ def is_type_comment(leaf: Leaf) -> bool:
     """Return True if the given leaf is a type comment. This function should only
     be used for general type comments (excluding ignore annotations, which should
     use `is_type_ignore_comment`). Note that general type comments are no longer
-    used in modern version of Python, this function may be deprecated in the future."""
+    used in modern version of Python, this function may be deprecated in the future.
+
+    This version checks for "#" followed by any number of spaces and then "type:",
+    and changes the value to have only one space between # and type if it is a type comment.
+    """
     t = leaf.type
     v = leaf.value
-    return t in {token.COMMENT, STANDALONE_COMMENT} and v.startswith("# type:")
+
+    if t in {token.COMMENT, token.STANDALONE_COMMENT}:
+        match = re.match(r"^#\s*type:(.*)", v)
+        if match:
+            suffix = match.group(1)
+            leaf.value = "# type:" + suffix.lstrip() # Keep only one space and remove leading space from suffix
+            return True
+    return False
 
 
 def is_type_ignore_comment(leaf: Leaf) -> bool:
