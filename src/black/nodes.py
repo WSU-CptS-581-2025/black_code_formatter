@@ -6,8 +6,6 @@ import sys
 from collections.abc import Iterator
 from typing import Final, Generic, Literal, Optional, TypeVar, Union
 
-import re
-
 if sys.version_info >= (3, 10):
     from typing import TypeGuard
 else:
@@ -935,11 +933,14 @@ def is_type_comment(leaf: Leaf) -> bool:
     v = leaf.value
 
     if t in {token.COMMENT}:
-        match = re.match(r"^#\s*type:(.*)", v)
-        if match:
-            suffix = match.group(1)
-            leaf.value = "# type:" + suffix.lstrip() # Keep only one space and remove leading space from suffix
-            return True
+        if v.startswith("#"):
+            comment_body = v[1:]  # Remove the initial "#"
+            trimmed_body = comment_body.lstrip() # Remove leading spaces
+
+            if trimmed_body.startswith("type:"):
+                suffix = trimmed_body[len("type:"):] # Get the part after "type:"
+                leaf.value = "# type:" + suffix.lstrip() # Keep one space, remove leading suffix spaces
+                return True
     return False
 
 
