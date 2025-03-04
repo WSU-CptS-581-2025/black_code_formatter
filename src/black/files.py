@@ -1,3 +1,4 @@
+import ast
 import io
 import os
 import sys
@@ -12,17 +13,7 @@ from packaging.specifiers import InvalidSpecifier, Specifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from pathspec import PathSpec
 from pathspec.patterns.gitwildmatch import GitWildMatchPatternError
-
-if sys.version_info >= (3, 11):
-    try:
-        import tomllib
-    except ImportError:
-        # Help users on older alphas
-        if not TYPE_CHECKING:
-            import tomli as tomllib
-else:
-    import tomli as tomllib
-
+from black import format_str, FileMode
 from black.handle_ipynb_magics import jupyter_dependencies_are_installed
 from black.mode import TargetVersion
 from black.output import err
@@ -43,24 +34,52 @@ def _cached_resolve(path: Path) -> Path:
     return path.resolve()
 
 
+def format_concatenated_comprehensions(code: str) -> str:
+    """
+    Formats concatenated list comprehensions to ensure they are properly enclosed in parentheses.
+    
+    """
+
+    class ComprehensionConcatenationTransformer(ast.NodeTransformer):
+        """
+        AST Transformer that ensures concatenated list comprehensions are enclosed within parentheses.
+        """
+        def visit_BinOp(self, node):
+            # Recursively visit child nodes
+            self.generic_visit(node)
+            
+            # Check if the operation is an addition of two list comprehensions
+            if isinstance(node.op, ast.Add):
+                if isinstance(node.left, ast.ListComp) and isinstance(node.right, ast.ListComp):
+                    return ast.copy_location(
+                        ast.BinOp(
+                            left=ast.Tuple(elts=[node.left], ctx=ast.Load()),
+                            op=node.op,
+                            right=ast.Tuple(elts=[node.right], ctx=ast.Load()),
+                        ),
+                        node,
+                    )
+            return node
+
+    # Parse the source code into an AST
+    tree = ast.parse(code)
+    
+    # Apply the transformation
+    transformed_tree = ComprehensionConcatenationTransformer().visit(tree)
+    
+    # Convert AST back to formatted code using Black
+    formatted_code = format_str(ast.unparse(transformed_tree), mode=FileMode())
+
+    return formatted_code
+
+
 @lru_cache
 def find_project_root(
     srcs: Sequence[str], stdin_filename: Optional[str] = None
 ) -> tuple[Path, str]:
     """Return a directory containing .git, .hg, or pyproject.toml.
 
-    pyproject.toml files are only considered if they contain a [tool.black]
-    section and are ignored otherwise.
-
-    That directory will be a common parent of all files and directories
-    passed in `srcs`.
-
-    If no directory in the tree contains a marker that would specify it's the
-    project root, the root of the file system is returned.
-
-    Returns a two-tuple with the first element as the project root path and
-    the second element as a string describing the method by which the
-    project root was discovered.
+    .
     """
     if stdin_filename is not None:
         srcs = tuple(stdin_filename if s == "-" else s for s in srcs)
@@ -69,8 +88,6 @@ def find_project_root(
 
     path_srcs = [_cached_resolve(Path(Path.cwd(), src)) for src in srcs]
 
-    # A list of lists of parents for each 'src'. 'src' is included as a
-    # "parent" of itself if it is a directory
     src_parents = [
         list(path.parents) + ([path] if path.is_dir() else []) for path in path_srcs
     ]
@@ -95,34 +112,10 @@ def find_project_root(
     return directory, "file system root"
 
 
-def find_pyproject_toml(
-    path_search_start: tuple[str, ...], stdin_filename: Optional[str] = None
-) -> Optional[str]:
-    """Find the absolute filepath to a pyproject.toml if it exists"""
-    path_project_root, _ = find_project_root(path_search_start, stdin_filename)
-    path_pyproject_toml = path_project_root / "pyproject.toml"
-    if path_pyproject_toml.is_file():
-        return str(path_pyproject_toml)
-
-    try:
-        path_user_pyproject_toml = find_user_pyproject_toml()
-        return (
-            str(path_user_pyproject_toml)
-            if path_user_pyproject_toml.is_file()
-            else None
-        )
-    except (PermissionError, RuntimeError) as e:
-        # We do not have access to the user-level config directory, so ignore it.
-        err(f"Ignoring user configuration directory due to {e!r}")
-        return None
-
-
 @mypyc_attr(patchable=True)
 def parse_pyproject_toml(path_config: str) -> dict[str, Any]:
-    """Parse a pyproject toml file, pulling out relevant parts for Black.
+    """Parse a pyproject toml file, pulling out relevant parts for Black."""
 
-    If parsing fails, will raise a tomllib.TOMLDecodeError.
-    """
     pyproject_toml = _load_toml(path_config)
     config: dict[str, Any] = pyproject_toml.get("tool", {}).get("black", {})
     config = {k.replace("--", "").replace("-", "_"): v for k, v in config.items()}
@@ -135,16 +128,9 @@ def parse_pyproject_toml(path_config: str) -> dict[str, Any]:
     return config
 
 
-def infer_target_version(
-    pyproject_toml: dict[str, Any],
-) -> Optional[list[TargetVersion]]:
-    """Infer Black's target version from the project metadata in pyproject.toml.
-
-    Supports the PyPA standard format (PEP 621):
-    https://packaging.python.org/en/latest/specifications/declaring-project-metadata/#requires-python
-
-    If the target version cannot be inferred, returns None.
-    """
+def infer_target_version(pyproject_toml: dict[str, Any]) -> Optional[list[TargetVersion]]:
+    """Infer Black's target version from `requires-python` in `pyproject.toml`."""
+    
     project_metadata = pyproject_toml.get("project", {})
     requires_python = project_metadata.get("requires-python", None)
     if requires_python is not None:
@@ -161,11 +147,7 @@ def infer_target_version(
 
 
 def parse_req_python_version(requires_python: str) -> Optional[list[TargetVersion]]:
-    """Parse a version string (i.e. ``"3.7"``) to a list of TargetVersion.
-
-    If parsing fails, will raise a packaging.version.InvalidVersion error.
-    If the parsed version cannot be mapped to a valid TargetVersion, returns None.
-    """
+    """Parse a single version string (e.g., `"3.7"`) into a list of `TargetVersion`."""
     version = Version(requires_python)
     if version.release[0] != 3:
         return None
@@ -176,11 +158,8 @@ def parse_req_python_version(requires_python: str) -> Optional[list[TargetVersio
 
 
 def parse_req_python_specifier(requires_python: str) -> Optional[list[TargetVersion]]:
-    """Parse a specifier string (i.e. ``">=3.7,<3.10"``) to a list of TargetVersion.
-
-    If parsing fails, will raise a packaging.specifiers.InvalidSpecifier error.
-    If the parsed specifier cannot be mapped to a valid TargetVersion, returns None.
-    """
+    """Parse a specifier string (e.g., `">=3.7,<3.10"`) into a list of `TargetVersion`."""
+    
     specifier_set = strip_specifier_set(SpecifierSet(requires_python))
     if not specifier_set:
         return None
@@ -193,11 +172,8 @@ def parse_req_python_specifier(requires_python: str) -> Optional[list[TargetVers
 
 
 def strip_specifier_set(specifier_set: SpecifierSet) -> SpecifierSet:
-    """Strip minor versions for some specifiers in the specifier set.
-
-    For background on version specifiers, see PEP 440:
-    https://peps.python.org/pep-0440/#version-specifiers
-    """
+    """Strip minor versions ."""
+    
     specifiers = []
     for s in specifier_set:
         if "*" in str(s):
@@ -215,6 +191,9 @@ def strip_specifier_set(specifier_set: SpecifierSet) -> SpecifierSet:
             specifiers.append(s)
 
     return SpecifierSet(",".join(str(s) for s in specifiers))
+
+
+
 
 
 @lru_cache
