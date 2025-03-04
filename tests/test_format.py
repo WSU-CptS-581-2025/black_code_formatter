@@ -72,17 +72,21 @@ def test_line_ranges_line_by_line(filename: str) -> None:
         )
 
 
-# =============== #
-# Unusual cases
-# =============== #
+
 
 
 def test_empty() -> None:
+    """
+    Error prevention for formatting an empty file.
+    """
     source = expected = ""
     assert_format(source, expected)
 
 
 def test_patma_invalid() -> None:
+    """
+    Ensure Black properly raises an error on invalid pattern matching syntax.
+    """
     source, expected = read_data("miscellaneous", "pattern_matching_invalid")
     mode = black.Mode(target_versions={black.TargetVersion.PY310})
     with pytest.raises(black.parsing.InvalidInput) as exc_info:
@@ -90,4 +94,34 @@ def test_patma_invalid() -> None:
 
     exc_info.match(
         "Cannot parse for target version Python 3.10: 10:11:     case a := b:"
+    )
+
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (
+            # Unformatted version with concatenated list comprehensions
+            """matching_routes = [r for r in routes if r.get("dst") and ip in ipaddress.ip_network(r.get("dst"))] + [
+                r for r in routes if r.get("dst") == "" and r.get("family") == family
+            ]""",
+            # Expected correctly formatted version
+            """matching_routes = (
+                [r for r in routes if r.get("dst") and ip in ipaddress.ip_network(r.get("dst"))] +
+                [r for r in routes if r.get("dst") == "" and r.get("family") == family]
+            )"""
+        )
+    ]
+)
+def test_concatenated_list_comprehensions(source: str, expected: str) -> None:
+    """
+    Ensure concatenated list comprehensions are formatted onto separate lines with parentheses.
+
+    """
+    mode = black.Mode()
+    formatted_code = black.format_file_contents(source, fast=False, mode=mode)
+    
+    assert formatted_code.strip() == expected.strip(), (
+        f"Expected:\n{expected}\nGot:\n{formatted_code}"
     )
