@@ -1,5 +1,4 @@
 import token
-import re
 
 def is_type_comment(leaf):
     """Return True if the given leaf is a type comment. This function should only
