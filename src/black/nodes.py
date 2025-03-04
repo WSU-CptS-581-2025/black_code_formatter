@@ -934,7 +934,7 @@ def is_type_comment(leaf: Leaf) -> bool:
     t = leaf.type
     v = leaf.value
 
-    if t in {token.COMMENT, token.STANDALONE_COMMENT}:
+    if t in {token.COMMENT}:
         match = re.match(r"^#\s*type:(.*)", v)
         if match:
             suffix = match.group(1)
