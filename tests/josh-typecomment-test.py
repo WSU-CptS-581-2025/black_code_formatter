@@ -1,6 +1,25 @@
 import token
+# from black.nodes import is_type_comment 
 
-def is_type_comment(leaf):
+class Leaf:
+    """
+    A simple class representing a leaf node with a type and a value.
+    This is for testing purposes and is meant to mimic a leaf object
+    that might be found in an AST or token stream.
+    """
+
+    def __init__(self, type, value):
+        """
+        Initializes a Leaf object.
+
+        Args:
+            type: The type of the leaf (e.g., token.COMMENT, token.NAME).
+            value: The string value of the leaf (e.g., "# type: int", "variable_name").
+        """
+        self.type = type
+        self.value = value
+
+def is_type_comment(leaf: Leaf) -> bool:
     """Return True if the given leaf is a type comment. This function should only
     be used for general type comments (excluding ignore annotations, which should
     use `is_type_ignore_comment`). Note that general type comments are no longer
@@ -23,41 +42,27 @@ def is_type_comment(leaf):
                 return True
     return False
 
-
-from collections import namedtuple
-
-class Leaf:
-    """
-    A simple class representing a leaf node with a type and a value.
-    This is for testing purposes and is meant to mimic a leaf object
-    that might be found in an AST or token stream.
-    """
-
-    def __init__(self, type, value):
-        """
-        Initializes a Leaf object.
-
-        Args:
-            type: The type of the leaf (e.g., token.COMMENT, token.NAME).
-            value: The string value of the leaf (e.g., "# type: int", "variable_name").
-        """
-        self.type = type
-        self.value = value
-
 # Test cases
-leaves = [
+passing_leaves = [    
     Leaf(type=token.COMMENT, value="# type: int"),
     Leaf(type=token.COMMENT, value="#  type: str"),
     Leaf(type=token.COMMENT, value="#\ttype: float"),
-    Leaf(type=token.COMMENT, value="#   \t  type: bool"),
-    Leaf(type=token.COMMENT, value="#not-a-type-comment"),
+    Leaf(type=token.COMMENT, value="#   \t  type: bool"),    
     Leaf(type=token.COMMENT, value="#type: but no space"),
+]
+failing_leaves = [
+    Leaf(type=token.COMMENT, value="#"),
+    Leaf(type=token.COMMENT, value=""),
+    Leaf(type=token.COMMENT, value="    "),
+    Leaf(type=token.COMMENT, value="#not-a-type-comment"),    
     Leaf(type=token.NAME, value="variable"), # Not a comment
     Leaf(type=token.COMMENT, value="# ignore[mypy]"), # Not a general type comment
 ]
 
-for leaf in leaves:
-    if is_type_comment(leaf):
-        print(f"'{leaf.value}' is a type comment")
-    else:
-        print(f"'{leaf.value}' is NOT a type comment")
+def test_pass():
+    for leaf in passing_leaves:
+        assert is_type_comment(leaf) == True
+
+def test_fail():
+    for leaf in failing_leaves:
+        assert is_type_comment(leaf) == False 
