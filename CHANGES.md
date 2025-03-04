@@ -8,7 +8,7 @@
 
 ### Stable style
 
-<!-- Changes that affect Black's stable style -->
+Changed style to keep type comments the same style
 
 ### Preview style
 
