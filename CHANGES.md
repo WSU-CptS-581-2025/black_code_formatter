@@ -46,8 +46,7 @@
 
 ### Documentation
 
-<!-- Major changes to documentation and policies. Small docs changes
-     don't need a changelog entry. -->
+- Added new document to detail how to use black efficianly with inline comments and configs.
 
 ## 25.1.0
 
