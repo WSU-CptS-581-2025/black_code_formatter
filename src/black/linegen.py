@@ -861,85 +861,14 @@ def _first_right_hand_split(
     _maybe_split_omitting_optional_parens to get an opinion whether to prefer
     splitting on the right side of an assignment statement.
     """
-    tail_leaves: list[Leaf] = []
-    body_leaves: list[Leaf] = []
-    head_leaves: list[Leaf] = []
-    current_leaves = tail_leaves
-    opening_bracket: Optional[Leaf] = None
-    closing_bracket: Optional[Leaf] = None
-    for leaf in reversed(line.leaves):
-        if current_leaves is body_leaves:
-            if leaf is opening_bracket:
-                current_leaves = head_leaves if body_leaves else tail_leaves
-        current_leaves.append(leaf)
-        if current_leaves is tail_leaves:
-            if leaf.type in CLOSING_BRACKETS and id(leaf) not in omit:
-                opening_bracket = leaf.opening_bracket
-                closing_bracket = leaf
-                current_leaves = body_leaves
-    if not (opening_bracket and closing_bracket and head_leaves):
-        # If there is no opening or closing_bracket that means the split failed and
-        # all content is in the tail.  Otherwise, if `head_leaves` are empty, it means
-        # the matching `opening_bracket` wasn't available on `line` anymore.
-        raise CannotSplit("No brackets found")
-
-    tail_leaves.reverse()
-    body_leaves.reverse()
-    head_leaves.reverse()
-
-    body: Optional[Line] = None
-    if (
-        Preview.hug_parens_with_braces_and_square_brackets in line.mode
-        and tail_leaves[0].value
-        and tail_leaves[0].opening_bracket is head_leaves[-1]
-    ):
-        inner_body_leaves = list(body_leaves)
-        hugged_opening_leaves: list[Leaf] = []
-        hugged_closing_leaves: list[Leaf] = []
-        is_unpacking = body_leaves[0].type in [token.STAR, token.DOUBLESTAR]
-        unpacking_offset: int = 1 if is_unpacking else 0
-        while (
-            len(inner_body_leaves) >= 2 + unpacking_offset
-            and inner_body_leaves[-1].type in CLOSING_BRACKETS
-            and inner_body_leaves[-1].opening_bracket
-            is inner_body_leaves[unpacking_offset]
-        ):
-            if unpacking_offset:
-                hugged_opening_leaves.append(inner_body_leaves.pop(0))
-                unpacking_offset = 0
-            hugged_opening_leaves.append(inner_body_leaves.pop(0))
-            hugged_closing_leaves.insert(0, inner_body_leaves.pop())
-
-        if hugged_opening_leaves and inner_body_leaves:
-            inner_body = bracket_split_build_line(
-                inner_body_leaves,
-                line,
-                hugged_opening_leaves[-1],
-                component=_BracketSplitComponent.body,
-            )
-            if (
-                line.mode.magic_trailing_comma
-                and inner_body_leaves[-1].type == token.COMMA
-            ):
-                should_hug = True
-            else:
-                line_length = line.mode.line_length - sum(
-                    len(str(leaf))
-                    for leaf in hugged_opening_leaves + hugged_closing_leaves
-                )
-                if is_line_short_enough(
-                    inner_body, mode=replace(line.mode, line_length=line_length)
-                ):
-                    # Do not hug if it fits on a single line.
-                    should_hug = False
-                else:
-                    should_hug = True
-            if should_hug:
-                body_leaves = inner_body_leaves
-                head_leaves.extend(hugged_opening_leaves)
-                tail_leaves = hugged_closing_leaves + tail_leaves
-                body = inner_body  # No need to re-calculate the body again later.
-
+    head_leaves, body_leaves, tail_leaves, opening_bracket, closing_bracket = _split_by_last_bracket_pair(line, omit)
+    
+    if _should_consider_hugging_brackets(line, head_leaves, body_leaves, tail_leaves):
+        body_leaves, head_leaves, tail_leaves, body = _handle_hugged_brackets(line, head_leaves, body_leaves, tail_leaves)
+    else:
+        body = None
+    
+    # Build the final head, body, tail lines
     head = bracket_split_build_line(
         head_leaves, line, opening_bracket, component=_BracketSplitComponent.head
     )
@@ -950,9 +879,152 @@ def _first_right_hand_split(
     tail = bracket_split_build_line(
         tail_leaves, line, opening_bracket, component=_BracketSplitComponent.tail
     )
+    
     bracket_split_succeeded_or_raise(head, body, tail)
     return RHSResult(head, body, tail, opening_bracket, closing_bracket)
 
+
+def _split_by_last_bracket_pair(
+    line: Line,
+    omit: Collection[LeafID] = (),
+) -> tuple[list[Leaf], list[Leaf], list[Leaf], Optional[Leaf], Optional[Leaf]]:
+    """Split the line into head, body, tail based on the last bracket pair."""
+    tail_leaves: list[Leaf] = []
+    body_leaves: list[Leaf] = []
+    head_leaves: list[Leaf] = []
+    current_leaves = tail_leaves
+    opening_bracket: Optional[Leaf] = None
+    closing_bracket: Optional[Leaf] = None
+    
+    for leaf in reversed(line.leaves):
+        if current_leaves is body_leaves:
+            if leaf is opening_bracket:
+                current_leaves = head_leaves if body_leaves else tail_leaves
+        current_leaves.append(leaf)
+        if current_leaves is tail_leaves:
+            if leaf.type in CLOSING_BRACKETS and id(leaf) not in omit:
+                opening_bracket = leaf.opening_bracket
+                closing_bracket = leaf
+                current_leaves = body_leaves
+    
+    if not (opening_bracket and closing_bracket and head_leaves):
+        # If there is no opening or closing_bracket that means the split failed and
+        # all content is in the tail. Otherwise, if `head_leaves` are empty, it means
+        # the matching `opening_bracket` wasn't available on `line` anymore.
+        raise CannotSplit("No brackets found")
+
+    tail_leaves.reverse()
+    body_leaves.reverse()
+    head_leaves.reverse()
+    
+    return head_leaves, body_leaves, tail_leaves, opening_bracket, closing_bracket
+
+
+def _should_consider_hugging_brackets(
+    line: Line,
+    head_leaves: list[Leaf],
+    body_leaves: list[Leaf],
+    tail_leaves: list[Leaf],
+) -> bool:
+    """Determine if we should consider hugging brackets."""
+    return (
+        Preview.hug_parens_with_braces_and_square_brackets in line.mode
+        and tail_leaves[0].value
+        and tail_leaves[0].opening_bracket is head_leaves[-1]
+    )
+
+
+def _handle_hugged_brackets(
+    line: Line,
+    head_leaves: list[Leaf],
+    body_leaves: list[Leaf],
+    tail_leaves: list[Leaf],
+) -> tuple[list[Leaf], list[Leaf], list[Leaf], Optional[Line]]:
+    """Handle the special case of hugging brackets."""
+    inner_body_leaves = list(body_leaves)
+    hugged_opening_leaves: list[Leaf] = []
+    hugged_closing_leaves: list[Leaf] = []
+    is_unpacking = body_leaves[0].type in [token.STAR, token.DOUBLESTAR]
+    unpacking_offset: int = 1 if is_unpacking else 0
+    
+    inner_body_leaves, hugged_opening_leaves, hugged_closing_leaves = _extract_hugged_brackets(
+        inner_body_leaves, hugged_opening_leaves, hugged_closing_leaves, unpacking_offset
+    )
+
+    body = None
+    if hugged_opening_leaves and inner_body_leaves:
+        inner_body = _build_inner_body_line(line, inner_body_leaves, hugged_opening_leaves)
+        should_hug = _should_hug_brackets(line, inner_body, inner_body_leaves, hugged_opening_leaves, hugged_closing_leaves)
+        
+        if should_hug:
+            body_leaves = inner_body_leaves
+            head_leaves.extend(hugged_opening_leaves)
+            tail_leaves = hugged_closing_leaves + tail_leaves
+            body = inner_body  # No need to re-calculate the body again later.
+    
+    return body_leaves, head_leaves, tail_leaves, body
+
+
+def _extract_hugged_brackets(
+    inner_body_leaves: list[Leaf],
+    hugged_opening_leaves: list[Leaf],
+    hugged_closing_leaves: list[Leaf],
+    unpacking_offset: int,
+) -> tuple[list[Leaf], list[Leaf], list[Leaf]]:
+    """Extract nested brackets from inner body."""
+    while (
+        len(inner_body_leaves) >= 2 + unpacking_offset
+        and inner_body_leaves[-1].type in CLOSING_BRACKETS
+        and inner_body_leaves[-1].opening_bracket
+        is inner_body_leaves[unpacking_offset]
+    ):
+        if unpacking_offset:
+            hugged_opening_leaves.append(inner_body_leaves.pop(0))
+            unpacking_offset = 0
+        hugged_opening_leaves.append(inner_body_leaves.pop(0))
+        hugged_closing_leaves.insert(0, inner_body_leaves.pop())
+    
+    return inner_body_leaves, hugged_opening_leaves, hugged_closing_leaves
+
+
+def _build_inner_body_line(
+    line: Line,
+    inner_body_leaves: list[Leaf],
+    hugged_opening_leaves: list[Leaf],
+) -> Line:
+    """Build the inner body line for hugged brackets."""
+    return bracket_split_build_line(
+        inner_body_leaves,
+        line,
+        hugged_opening_leaves[-1],
+        component=_BracketSplitComponent.body,
+    )
+
+
+def _should_hug_brackets(
+    line: Line,
+    inner_body: Line,
+    inner_body_leaves: list[Leaf],
+    hugged_opening_leaves: list[Leaf],
+    hugged_closing_leaves: list[Leaf],
+) -> bool:
+    """Determine if brackets should be hugged based on various conditions."""
+    if (
+        line.mode.magic_trailing_comma
+        and inner_body_leaves[-1].type == token.COMMA
+    ):
+        return True
+    
+    # Calculate available line length considering hugged brackets
+    line_length = line.mode.line_length - sum(
+        len(str(leaf))
+        for leaf in hugged_opening_leaves + hugged_closing_leaves
+    )
+    
+    # Don't hug if it fits on a single line
+    return not is_line_short_enough(
+        inner_body, mode=replace(line.mode, line_length=line_length)
+    )
 
 def _maybe_split_omitting_optional_parens(
     rhs: RHSResult,
