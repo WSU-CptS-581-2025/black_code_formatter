@@ -135,23 +135,58 @@ async def schedule_formatting(
     `write_back`, `fast`, and `mode` options are passed to
     :func:`format_file_in_place`.
     """
+    sources, sources_to_cache = _prepare_sources(sources, write_back, mode, report)
+    if not sources:
+        return
+
+    lock = _get_lock_if_needed(write_back)
+    tasks = _create_formatting_tasks(sources, fast, mode, write_back, lock, loop, executor)
+
+    pending = tasks.keys()
+    _setup_signal_handlers(loop, pending)
+    
+    await _process_tasks(pending, tasks, report, write_back, sources_to_cache)
+    
+    if sources_to_cache:
+        Cache.read(mode).write(sources_to_cache)
+
+
+def _prepare_sources(
+    sources: set[Path], write_back: WriteBack, mode: Mode, report: "Report"
+) -> tuple[set[Path], list[Path]]:
+    """Filter sources using cache and report cached files."""
     cache = Cache.read(mode)
+    sources_to_cache = []
+    
     if write_back not in (WriteBack.DIFF, WriteBack.COLOR_DIFF):
         sources, cached = cache.filtered_cached(sources)
         for src in sorted(cached):
             report.done(src, Changed.CACHED)
-    if not sources:
-        return
+            
+    return sources, sources_to_cache
 
-    cancelled = []
-    sources_to_cache = []
-    lock = None
+
+def _get_lock_if_needed(write_back: WriteBack) -> Optional[Any]:
+    """Create a lock for diff output to prevent interleaved output."""
     if write_back in (WriteBack.DIFF, WriteBack.COLOR_DIFF):
         # For diff output, we need locks to ensure we don't interleave output
         # from different processes.
         manager = Manager()
-        lock = manager.Lock()
-    tasks = {
+        return manager.Lock()
+    return None
+
+
+def _create_formatting_tasks(
+    sources: set[Path],
+    fast: bool,
+    mode: Mode,
+    write_back: WriteBack,
+    lock: Optional[Any],
+    loop: asyncio.AbstractEventLoop,
+    executor: "Executor",
+) -> dict[asyncio.Future, Path]:
+    """Create async tasks for formatting each source file."""
+    return {
         asyncio.ensure_future(
             loop.run_in_executor(
                 executor, format_file_in_place, src, fast, mode, write_back, lock
@@ -159,13 +194,30 @@ async def schedule_formatting(
         ): src
         for src in sorted(sources)
     }
-    pending = tasks.keys()
+
+
+def _setup_signal_handlers(
+    loop: asyncio.AbstractEventLoop, pending: set[asyncio.Future]
+) -> None:
+    """Set up signal handlers for graceful cancellation."""
     try:
         loop.add_signal_handler(signal.SIGINT, cancel, pending)
         loop.add_signal_handler(signal.SIGTERM, cancel, pending)
     except NotImplementedError:
         # There are no good alternatives for these on Windows.
         pass
+
+
+async def _process_tasks(
+    pending: set[asyncio.Future],
+    tasks: dict[asyncio.Future, Path],
+    report: "Report",
+    write_back: WriteBack,
+    sources_to_cache: list[Path],
+) -> None:
+    """Process completed tasks and update reporting/caching."""
+    cancelled = []
+    
     while pending:
         done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -173,19 +225,34 @@ async def schedule_formatting(
             if task.cancelled():
                 cancelled.append(task)
             elif exc := task.exception():
-                if report.verbose:
-                    traceback.print_exception(type(exc), exc, exc.__traceback__)
-                report.failed(src, str(exc))
+                _handle_task_exception(src, exc, report)
             else:
-                changed = Changed.YES if task.result() else Changed.NO
-                # If the file was written back or was successfully checked as
-                # well-formatted, store this information in the cache.
-                if write_back is WriteBack.YES or (
-                    write_back is WriteBack.CHECK and changed is Changed.NO
-                ):
-                    sources_to_cache.append(src)
-                report.done(src, changed)
+                _handle_task_success(src, task.result(), write_back, sources_to_cache, report)
+    
     if cancelled:
         await asyncio.gather(*cancelled, return_exceptions=True)
-    if sources_to_cache:
-        cache.write(sources_to_cache)
+
+
+def _handle_task_exception(src: Path, exc: Exception, report: "Report") -> None:
+    """Handle exception from a formatting task."""
+    if report.verbose:
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+    report.failed(src, str(exc))
+
+
+def _handle_task_success(
+    src: Path,
+    was_changed: bool,
+    write_back: WriteBack,
+    sources_to_cache: list[Path],
+    report: "Report",
+) -> None:
+    """Handle successful completion of a formatting task."""
+    changed = Changed.YES if was_changed else Changed.NO
+    # If the file was written back or was successfully checked as
+    # well-formatted, store this information in the cache.
+    if write_back is WriteBack.YES or (
+        write_back is WriteBack.CHECK and changed is Changed.NO
+    ):
+        sources_to_cache.append(src)
+    report.done(src, changed)
