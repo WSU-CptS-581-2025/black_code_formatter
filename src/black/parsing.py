@@ -180,6 +180,35 @@ def _stringify_ast_with_new_parent(
 
 
 def _stringify_ast(node: ast.AST, parent_stack: list[ast.AST]) -> Iterator[str]:
+    """Generate string representation of AST for comparison."""
+    _handle_constant_unicode_node(node)
+    
+    yield f"{'    ' * len(parent_stack)}{node.__class__.__name__}("
+    
+    for field in sorted(node._fields):
+        # TypeIgnore has only one field 'lineno' which breaks this comparison
+        if isinstance(node, ast.TypeIgnore):
+            break
+            
+        try:
+            value: object = getattr(node, field)
+        except AttributeError:
+            continue
+            
+        yield f"{'    ' * (len(parent_stack) + 1)}{field}="
+        
+        if isinstance(value, list):
+            yield from _handle_list_value(value, field, node, parent_stack)
+        elif isinstance(value, ast.AST):
+            yield from _stringify_ast_with_new_parent(value, parent_stack, node)
+        else:
+            yield from _handle_simple_value(value, field, node, parent_stack)
+            
+    yield f"{'    ' * len(parent_stack)})  # /{node.__class__.__name__}"
+
+
+def _handle_constant_unicode_node(node: ast.AST) -> None:
+    """Handle unicode string constants by removing the u prefix."""
     if (
         isinstance(node, ast.Constant)
         and isinstance(node.value, str)
@@ -190,63 +219,66 @@ def _stringify_ast(node: ast.AST, parent_stack: list[ast.AST]) -> Iterator[str]:
         # over the kind
         node.kind = None
 
-    yield f"{'    ' * len(parent_stack)}{node.__class__.__name__}("
 
-    for field in sorted(node._fields):  # noqa: F402
-        # TypeIgnore has only one field 'lineno' which breaks this comparison
-        if isinstance(node, ast.TypeIgnore):
-            break
+def _handle_list_value(
+    value_list: list, field: str, node: ast.AST, parent_stack: list[ast.AST]
+) -> Iterator[str]:
+    """Process a list of values in an AST node field."""
+    for item in value_list:
+        # Ignore nested tuples within del statements, because we may insert
+        # parentheses and they change the AST.
+        if (
+            field == "targets"
+            and isinstance(node, ast.Delete)
+            and isinstance(item, ast.Tuple)
+        ):
+            for elt in item.elts:
+                yield from _stringify_ast_with_new_parent(elt, parent_stack, node)
+        elif isinstance(item, ast.AST):
+            yield from _stringify_ast_with_new_parent(item, parent_stack, node)
 
-        try:
-            value: object = getattr(node, field)
-        except AttributeError:
-            continue
 
-        yield f"{'    ' * (len(parent_stack) + 1)}{field}="
+def _handle_simple_value(
+    value: object, field: str, node: ast.AST, parent_stack: list[ast.AST]
+) -> Iterator[str]:
+    """Process a simple (non-AST, non-list) value in an AST node field."""
+    normalized = _normalize_value(value, field, node, parent_stack)
+    yield (
+        f"{'    ' * (len(parent_stack) + 1)}{normalized!r},  #"
+        f" {value.__class__.__name__}"
+    )
 
-        if isinstance(value, list):
-            for item in value:
-                # Ignore nested tuples within del statements, because we may insert
-                # parentheses and they change the AST.
-                if (
-                    field == "targets"
-                    and isinstance(node, ast.Delete)
-                    and isinstance(item, ast.Tuple)
-                ):
-                    for elt in item.elts:
-                        yield from _stringify_ast_with_new_parent(
-                            elt, parent_stack, node
-                        )
 
-                elif isinstance(item, ast.AST):
-                    yield from _stringify_ast_with_new_parent(item, parent_stack, node)
+def _normalize_value(
+    value: object, field: str, node: ast.AST, parent_stack: list[ast.AST]
+) -> object:
+    """Normalize values for consistent AST comparison."""
+    if (
+        isinstance(node, ast.Constant)
+        and field == "value"
+        and isinstance(value, str)
+        and len(parent_stack) >= 2
+        # Any standalone string, ideally this would
+        # exactly match black.nodes.is_docstring
+        and isinstance(parent_stack[-1], ast.Expr)
+    ):
+        # Constant strings may be indented across newlines, if they are
+        # docstrings; fold spaces after newlines when comparing. Similarly,
+        # trailing and leading space may be removed.
+        return _normalize("\n", value)
+    elif field == "type_comment" and isinstance(value, str):
+        # Trailing whitespace in type comments is removed.
+        return value.rstrip()
+    else:
+        return value
 
-        elif isinstance(value, ast.AST):
-            yield from _stringify_ast_with_new_parent(value, parent_stack, node)
 
-        else:
-            normalized: object
-            if (
-                isinstance(node, ast.Constant)
-                and field == "value"
-                and isinstance(value, str)
-                and len(parent_stack) >= 2
-                # Any standalone string, ideally this would
-                # exactly match black.nodes.is_docstring
-                and isinstance(parent_stack[-1], ast.Expr)
-            ):
-                # Constant strings may be indented across newlines, if they are
-                # docstrings; fold spaces after newlines when comparing. Similarly,
-                # trailing and leading space may be removed.
-                normalized = _normalize("\n", value)
-            elif field == "type_comment" and isinstance(value, str):
-                # Trailing whitespace in type comments is removed.
-                normalized = value.rstrip()
-            else:
-                normalized = value
-            yield (
-                f"{'    ' * (len(parent_stack) + 1)}{normalized!r},  #"
-                f" {value.__class__.__name__}"
-            )
 
-    yield f"{'    ' * len(parent_stack)})  # /{node.__class__.__name__}"
+
+
+
+
+
+
+
+

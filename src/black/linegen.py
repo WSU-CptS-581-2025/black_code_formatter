@@ -223,10 +223,6 @@ class LineGenerator(Visitor[Line]):
             yield from self.visit(child)
 
     def visit_yield_expr(self, node: Node) -> Iterator[Line]:
-        """
-        If a "yield expr", treat similarly to "return expr",
-        but if it is a "yield from expr", treat expr as a group
-        """
         content = node.children[1]
         if content.type != syms.yield_arg:
             # this is a "yield expr"
