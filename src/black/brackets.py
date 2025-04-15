@@ -238,89 +238,122 @@ def is_split_before_delimiter(leaf: Leaf, previous: Optional[Leaf] = None) -> Pr
 
     Higher numbers are higher priority.
     """
-    if is_vararg(leaf, within=VARARGS_PARENTS | UNPACKING_PARENTS):
+    # Check if leaf is a vararg within specific parent types
+    is_vararg_in_allowed_parent = is_vararg(leaf, within=VARARGS_PARENTS | UNPACKING_PARENTS)
+    if is_vararg_in_allowed_parent:
         # * and ** might also be MATH_OPERATORS but in this case they are not.
         # Don't treat them as a delimiter.
         return 0
 
-    if (
+    # Check if leaf is a dot after a closing bracket
+    is_dot_after_bracket = (
         leaf.type == token.DOT
         and leaf.parent
         and leaf.parent.type not in {syms.import_from, syms.dotted_name}
         and (previous is None or previous.type in CLOSING_BRACKETS)
-    ):
+    )
+    if is_dot_after_bracket:
         return DOT_PRIORITY
 
-    if (
+    # Check if leaf is a math operator in an expression
+    is_math_operator_in_expression = (
         leaf.type in MATH_OPERATORS
         and leaf.parent
         and leaf.parent.type not in {syms.factor, syms.star_expr}
-    ):
+    )
+    if is_math_operator_in_expression:
         return MATH_PRIORITIES[leaf.type]
 
-    if leaf.type in COMPARATORS:
+    # Check if leaf is a comparison operator
+    is_comparator = leaf.type in COMPARATORS
+    if is_comparator:
         return COMPARATOR_PRIORITY
 
-    if (
+    # Check if leaf is a string literal following another string literal
+    is_consecutive_string = (
         leaf.type == token.STRING
         and previous is not None
         and previous.type == token.STRING
-    ):
+    )
+    if is_consecutive_string:
         return STRING_PRIORITY
 
+    # Skip further checks if leaf is not a name or async keyword
     if leaf.type not in {token.NAME, token.ASYNC}:
         return 0
 
-    if (
+    # Check if leaf is a 'for' in a comprehension or an async keyword
+    is_for_in_comprehension = (
         leaf.value == "for"
         and leaf.parent
         and leaf.parent.type in {syms.comp_for, syms.old_comp_for}
-        or leaf.type == token.ASYNC
-    ):
-        if (
-            not isinstance(leaf.prev_sibling, Leaf)
-            or leaf.prev_sibling.value != "async"
-        ):
-            return COMPREHENSION_PRIORITY
+    )
+    is_async_keyword = leaf.type == token.ASYNC
+    
+    has_no_async_prefix = (
+        not isinstance(leaf.prev_sibling, Leaf)
+        or leaf.prev_sibling.value != "async"
+    )
+    
+    if (is_for_in_comprehension or is_async_keyword) and has_no_async_prefix:
+        return COMPREHENSION_PRIORITY
 
-    if (
+    # Check if leaf is an 'if' in a comprehension
+    is_if_in_comprehension = (
         leaf.value == "if"
         and leaf.parent
         and leaf.parent.type in {syms.comp_if, syms.old_comp_if}
-    ):
+    )
+    if is_if_in_comprehension:
         return COMPREHENSION_PRIORITY
 
-    if leaf.value in {"if", "else"} and leaf.parent and leaf.parent.type == syms.test:
+    # Check if leaf is part of a ternary expression
+    is_ternary_operator = (
+        leaf.value in {"if", "else"} 
+        and leaf.parent 
+        and leaf.parent.type == syms.test
+    )
+    if is_ternary_operator:
         return TERNARY_PRIORITY
 
-    if leaf.value == "is":
+    # Check if leaf is 'is' operator
+    is_is_operator = leaf.value == "is"
+    if is_is_operator:
         return COMPARATOR_PRIORITY
 
-    if (
+    # Check if leaf is 'in' operator in a comparison (not preceded by 'not')
+    is_in_comparison = (
         leaf.value == "in"
         and leaf.parent
         and leaf.parent.type in {syms.comp_op, syms.comparison}
-        and not (
-            previous is not None
-            and previous.type == token.NAME
-            and previous.value == "not"
-        )
-    ):
+    )
+    is_not_preceded_by_not = not (
+        previous is not None
+        and previous.type == token.NAME
+        and previous.value == "not"
+    )
+    
+    if is_in_comparison and is_not_preceded_by_not:
         return COMPARATOR_PRIORITY
 
-    if (
+    # Check if leaf is 'not' in a comparison (not preceded by 'is')
+    is_not_in_comparison = (
         leaf.value == "not"
         and leaf.parent
         and leaf.parent.type == syms.comp_op
-        and not (
-            previous is not None
-            and previous.type == token.NAME
-            and previous.value == "is"
-        )
-    ):
+    )
+    is_not_preceded_by_is = not (
+        previous is not None
+        and previous.type == token.NAME
+        and previous.value == "is"
+    )
+    
+    if is_not_in_comparison and is_not_preceded_by_is:
         return COMPARATOR_PRIORITY
 
-    if leaf.value in LOGIC_OPERATORS and leaf.parent:
+    # Check if leaf is a logical operator
+    is_logic_operator = leaf.value in LOGIC_OPERATORS and leaf.parent
+    if is_logic_operator:
         return LOGIC_PRIORITY
 
     return 0
