@@ -181,25 +181,222 @@ class Visitor(Generic[T]):
                 yield from self.visit(child)
 
 
-def whitespace(leaf: Leaf, *, complex_subscript: bool, mode: Mode) -> str:  # noqa: C901
+def _whitespace_checks_if_no_prev(leaf: Leaf, p: Node, complex_subscript: bool) -> Optional[str]:
+    """Handle whitespace checks when leaf.prev_sibling is None."""
+    NO = ""
+    SPACE = " "
+    t = leaf.type
+    prevp = preceding_leaf(p)
+
+    if not prevp or prevp.type in OPENING_BRACKETS:
+        return NO
+
+
+    if t == token.COLON:
+        if prevp.type == token.COLON:
+            return NO
+
+        elif prevp.type != token.COMMA and not complex_subscript:
+            return NO
+        return SPACE
+
+
+    if prevp.type == token.EQUAL:
+        prevp_parent = parent_type(prevp)
+        if prevp_parent in {
+            syms.arglist,
+            syms.argument,
+            syms.parameters,
+            syms.varargslist,
+        }:
+            return NO
+        elif prevp_parent == syms.typedargslist:
+
+            return prevp.prefix
+
+
+    elif (
+        prevp.type == token.STAR
+        and parent_type(prevp) == syms.star_expr
+        and parent_type(prevp.parent) in (syms.subscriptlist, syms.tname_star)
+    ):
+
+        return NO
+
+
+    elif prevp.type in VARARGS_SPECIALS and is_vararg(
+        prevp, within=VARARGS_PARENTS | UNPACKING_PARENTS
+    ):
+        return NO
+
+
+    elif prevp.type == token.COLON:
+        prevp_parent = parent_type(prevp)
+        if prevp_parent in {syms.subscript, syms.sliceop}:
+            return SPACE if complex_subscript else NO
+
+
+
+    elif (
+        parent_type(prevp) == syms.factor
+        and prevp.type in MATH_OPERATORS
+    ):
+        return NO
+
+
+    elif prevp.type == token.AT and parent_type(p) == syms.decorator:
+        return NO
+
+
+    return None
+
+
+def _whitespace_checks_based_on_parent(leaf: Leaf, p: Node, prev: Optional[LN], complex_subscript: bool) -> Optional[str]:
+    """Handle whitespace checks based on the parent node type."""
+    NO = ""
+    SPACE = " "
+    t = leaf.type
+    v = leaf.value
+    ptype = p.type
+
+    prev_type = prev.type if prev else None
+
+    if ptype in {syms.parameters, syms.arglist}:
+
+        if not prev or prev_type != token.COMMA:
+            return NO
+    elif ptype == syms.varargslist:
+
+        if prev and prev_type != token.COMMA:
+            return NO
+    elif ptype == syms.typedargslist:
+
+        if not prev:
+            return NO
+        if t == token.EQUAL:
+            if prev_type not in TYPED_NAMES:
+                return NO
+        elif prev_type == token.EQUAL:
+
+            return prev.prefix
+        elif prev_type != token.COMMA:
+            return NO
+    elif ptype in TYPED_NAMES:
+
+        if not prev:
+            prevp = preceding_leaf(p)
+            if not prevp or prevp.type != token.COMMA:
+                return NO
+    elif ptype == syms.trailer:
+
+        if t in {token.LPAR, token.RPAR}:
+            return NO
+        if not prev:
+            if t in {token.DOT, token.LSQB}:
+                return NO
+        elif prev_type != token.COMMA:
+            return NO
+    elif ptype == syms.argument:
+
+        if t == token.EQUAL:
+            return NO
+        if not prev:
+            prevp = preceding_leaf(p)
+            if not prevp or prevp.type == token.LPAR:
+                 return NO
+        elif prev_type in {token.EQUAL} | VARARGS_SPECIALS:
+                 return NO
+    elif ptype == syms.decorator:
+        return NO
+    elif ptype == syms.dotted_name:
+
+        if prev:
+             return NO
+        prevp = preceding_leaf(p)
+        if not prevp or prevp.type in {token.AT, token.DOT}:
+             return NO
+    elif ptype == syms.classdef:
+
+        if t == token.LPAR:
+             return NO
+        if prev and prev_type == token.LPAR:
+             return NO
+    elif ptype in {syms.subscript, syms.sliceop}:
+
+        if not prev:
+            assert p.parent is not None, "subscripts are always parented"
+
+            return SPACE if p.parent.type == syms.subscriptlist else NO
+
+        elif t == token.COLONEQUAL or prev_type == token.COLONEQUAL:
+             return SPACE
+
+        elif not complex_subscript:
+            return NO
+    elif ptype == syms.atom:
+
+        if prev and t == token.DOT:
+            return NO
+    elif ptype == syms.dictsetmaker:
+
+        if prev and prev_type == token.DOUBLESTAR:
+            return NO
+    elif ptype in {syms.factor, syms.star_expr}:
+
+        if not prev:
+            prevp = preceding_leaf(p)
+            if not prevp or prevp.type in OPENING_BRACKETS:
+                return NO
+            prevp_parent = parent_type(prevp)
+
+            if prevp.type == token.COLON and prevp_parent in {syms.subscript, syms.sliceop}:
+                 return NO
+            elif prevp.type == token.EQUAL and prevp_parent == syms.argument:
+                 return NO
+
+        elif t in {token.NAME, token.NUMBER, token.STRING}:
+             return NO
+    elif ptype == syms.import_from:
+
+        if t == token.DOT:
+            if prev and prev_type == token.DOT:
+                return NO
+        elif t == token.NAME:
+            if v == "import":
+                 return SPACE
+            if prev and prev_type == token.DOT:
+                 return NO
+    elif ptype == syms.sliceop:
+        return NO
+    elif ptype == syms.except_clause:
+
+        if t == token.STAR:
+            return NO
+
+
+    return None
+
+
+def whitespace(leaf: Leaf, *, complex_subscript: bool, mode: Mode) -> str:
     """Return whitespace prefix if needed for the given `leaf`.
 
     `complex_subscript` signals whether the given leaf is part of a subscription
     which has non-trivial arguments, like arithmetic expressions or function calls.
     """
-    NO: Final[str] = ""
-    SPACE: Final[str] = " "
-    DOUBLESPACE: Final[str] = "  "
+    NO = ""
+    SPACE = " "
+    DOUBLESPACE = "  "
     t = leaf.type
     p = leaf.parent
     v = leaf.value
+
+
     if t in ALWAYS_NO_SPACE:
         return NO
-
     if t == token.COMMENT:
         return DOUBLESPACE
-
     assert p is not None, f"INTERNAL ERROR: hand-made leaf without parent: {leaf!r}"
+
     if t == token.COLON and p.type not in {
         syms.subscript,
         syms.subscriptlist,
@@ -210,213 +407,25 @@ def whitespace(leaf: Leaf, *, complex_subscript: bool, mode: Mode) -> str:  # no
     if t == token.LBRACE and p.type == syms.fstring_replacement_field:
         return NO
 
+
     prev = leaf.prev_sibling
     if not prev:
-        prevp = preceding_leaf(p)
-        if not prevp or prevp.type in OPENING_BRACKETS:
-            return NO
 
-        if t == token.COLON:
-            if prevp.type == token.COLON:
-                return NO
-
-            elif prevp.type != token.COMMA and not complex_subscript:
-                return NO
-
-            return SPACE
-
-        if prevp.type == token.EQUAL:
-            if prevp.parent:
-                if prevp.parent.type in {
-                    syms.arglist,
-                    syms.argument,
-                    syms.parameters,
-                    syms.varargslist,
-                }:
-                    return NO
-
-                elif prevp.parent.type == syms.typedargslist:
-                    # A bit hacky: if the equal sign has whitespace, it means we
-                    # previously found it's a typed argument.  So, we're using
-                    # that, too.
-                    return prevp.prefix
-
-        elif (
-            prevp.type == token.STAR
-            and parent_type(prevp) == syms.star_expr
-            and parent_type(prevp.parent) in (syms.subscriptlist, syms.tname_star)
-        ):
-            # No space between typevar tuples or unpacking them.
-            return NO
-
-        elif prevp.type in VARARGS_SPECIALS:
-            if is_vararg(prevp, within=VARARGS_PARENTS | UNPACKING_PARENTS):
-                return NO
-
-        elif prevp.type == token.COLON:
-            if prevp.parent and prevp.parent.type in {syms.subscript, syms.sliceop}:
-                return SPACE if complex_subscript else NO
-
-        elif (
-            prevp.parent
-            and prevp.parent.type == syms.factor
-            and prevp.type in MATH_OPERATORS
-        ):
-            return NO
-
-        elif prevp.type == token.AT and p.parent and p.parent.type == syms.decorator:
-            # no space in decorators
-            return NO
-
+        result = _whitespace_checks_if_no_prev(leaf, p, complex_subscript)
+        if result is not None:
+            return result
     elif prev.type in OPENING_BRACKETS:
-        return NO
 
+        return NO
     elif prev.type == token.BANG:
+
         return NO
 
-    if p.type in {syms.parameters, syms.arglist}:
-        # untyped function signatures or calls
-        if not prev or prev.type != token.COMMA:
-            return NO
 
-    elif p.type == syms.varargslist:
-        # lambdas
-        if prev and prev.type != token.COMMA:
-            return NO
+    result = _whitespace_checks_based_on_parent(leaf, p, prev, complex_subscript)
+    if result is not None:
+        return result
 
-    elif p.type == syms.typedargslist:
-        # typed function signatures
-        if not prev:
-            return NO
-
-        if t == token.EQUAL:
-            if prev.type not in TYPED_NAMES:
-                return NO
-
-        elif prev.type == token.EQUAL:
-            # A bit hacky: if the equal sign has whitespace, it means we
-            # previously found it's a typed argument.  So, we're using that, too.
-            return prev.prefix
-
-        elif prev.type != token.COMMA:
-            return NO
-
-    elif p.type in TYPED_NAMES:
-        # type names
-        if not prev:
-            prevp = preceding_leaf(p)
-            if not prevp or prevp.type != token.COMMA:
-                return NO
-
-    elif p.type == syms.trailer:
-        # attributes and calls
-        if t == token.LPAR or t == token.RPAR:
-            return NO
-
-        if not prev:
-            if t == token.DOT or t == token.LSQB:
-                return NO
-
-        elif prev.type != token.COMMA:
-            return NO
-
-    elif p.type == syms.argument:
-        # single argument
-        if t == token.EQUAL:
-            return NO
-
-        if not prev:
-            prevp = preceding_leaf(p)
-            if not prevp or prevp.type == token.LPAR:
-                return NO
-
-        elif prev.type in {token.EQUAL} | VARARGS_SPECIALS:
-            return NO
-
-    elif p.type == syms.decorator:
-        # decorators
-        return NO
-
-    elif p.type == syms.dotted_name:
-        if prev:
-            return NO
-
-        prevp = preceding_leaf(p)
-        if not prevp or prevp.type == token.AT or prevp.type == token.DOT:
-            return NO
-
-    elif p.type == syms.classdef:
-        if t == token.LPAR:
-            return NO
-
-        if prev and prev.type == token.LPAR:
-            return NO
-
-    elif p.type in {syms.subscript, syms.sliceop}:
-        # indexing
-        if not prev:
-            assert p.parent is not None, "subscripts are always parented"
-            if p.parent.type == syms.subscriptlist:
-                return SPACE
-
-            return NO
-
-        elif t == token.COLONEQUAL or prev.type == token.COLONEQUAL:
-            return SPACE
-
-        elif not complex_subscript:
-            return NO
-
-    elif p.type == syms.atom:
-        if prev and t == token.DOT:
-            # dots, but not the first one.
-            return NO
-
-    elif p.type == syms.dictsetmaker:
-        # dict unpacking
-        if prev and prev.type == token.DOUBLESTAR:
-            return NO
-
-    elif p.type in {syms.factor, syms.star_expr}:
-        # unary ops
-        if not prev:
-            prevp = preceding_leaf(p)
-            if not prevp or prevp.type in OPENING_BRACKETS:
-                return NO
-
-            prevp_parent = prevp.parent
-            assert prevp_parent is not None
-            if prevp.type == token.COLON and prevp_parent.type in {
-                syms.subscript,
-                syms.sliceop,
-            }:
-                return NO
-
-            elif prevp.type == token.EQUAL and prevp_parent.type == syms.argument:
-                return NO
-
-        # TODO: add fstring here?
-        elif t in {token.NAME, token.NUMBER, token.STRING}:
-            return NO
-
-    elif p.type == syms.import_from:
-        if t == token.DOT:
-            if prev and prev.type == token.DOT:
-                return NO
-
-        elif t == token.NAME:
-            if v == "import":
-                return SPACE
-
-            if prev and prev.type == token.DOT:
-                return NO
-
-    elif p.type == syms.sliceop:
-        return NO
-
-    elif p.type == syms.except_clause:
-        if t == token.STAR:
-            return NO
 
     return SPACE
 
