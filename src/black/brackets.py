@@ -230,19 +230,15 @@ def is_split_after_delimiter(leaf: Leaf) -> Priority:
     return 0
 
 
-def is_split_before_delimiter(leaf: Leaf, previous: Optional[Leaf] = None) -> Priority:
-    """Return the priority of the `leaf` delimiter, given a line break before it.
-
-    The delimiter priorities returned here are from those delimiters that would
-    cause a line break before themselves.
-
-    Higher numbers are higher priority.
-    """
-    if is_vararg(leaf, within=VARARGS_PARENTS | UNPACKING_PARENTS):
-        # * and ** might also be MATH_OPERATORS but in this case they are not.
-        # Don't treat them as a delimiter.
+def _check_vararg(leaf: Leaf) -> Optional[Priority]:
+    """Check if the leaf is a vararg that shouldn't be a delimiter."""
+    if is_vararg(leaf, within=VARARGS_PARENTS | UNPACKING_PARENTS):        
         return 0
+    return None
 
+
+def _check_dot(leaf: Leaf, previous: Optional[Leaf]) -> Optional[Priority]:
+    """Check for the dot delimiter."""
     if (
         leaf.type == token.DOT
         and leaf.parent
@@ -250,78 +246,145 @@ def is_split_before_delimiter(leaf: Leaf, previous: Optional[Leaf] = None) -> Pr
         and (previous is None or previous.type in CLOSING_BRACKETS)
     ):
         return DOT_PRIORITY
+    return None
 
+
+def _check_math_operator(leaf: Leaf) -> Optional[Priority]:
+    """Check for math operator delimiters."""
     if (
         leaf.type in MATH_OPERATORS
         and leaf.parent
         and leaf.parent.type not in {syms.factor, syms.star_expr}
     ):
         return MATH_PRIORITIES[leaf.type]
+    return None
 
+
+def _check_comparator(leaf: Leaf, previous: Optional[Leaf]) -> Optional[Priority]:
+    """Check for comparator delimiters."""
     if leaf.type in COMPARATORS:
         return COMPARATOR_PRIORITY
+    # Specific keyword comparators
+    if leaf.type == token.NAME:
+        if leaf.value == "is":
+            return COMPARATOR_PRIORITY
+        if (
+            leaf.value == "in"
+            and leaf.parent
+            and leaf.parent.type in {syms.comp_op, syms.comparison}
+            and not (
+                previous is not None
+                and previous.type == token.NAME
+                and previous.value == "not"
+            )
+        ):
+            return COMPARATOR_PRIORITY
+        if (
+            leaf.value == "not"
+            and leaf.parent
+            and leaf.parent.type == syms.comp_op
+            and not (
+                previous is not None
+                and previous.type == token.NAME
+                and previous.value == "is"
+            )
+        ):
+            return COMPARATOR_PRIORITY
+    return None
 
+
+def _check_string_concatenation(leaf: Leaf, previous: Optional[Leaf]) -> Optional[Priority]:
+    """Check for implicit string concatenation delimiter."""
     if (
         leaf.type == token.STRING
         and previous is not None
         and previous.type == token.STRING
     ):
         return STRING_PRIORITY
+    return None
 
-    if leaf.type not in {token.NAME, token.ASYNC}:
-        return 0
 
-    if (
-        leaf.value == "for"
-        and leaf.parent
-        and leaf.parent.type in {syms.comp_for, syms.old_comp_for}
-        or leaf.type == token.ASYNC
-    ):
-        if (
-            not isinstance(leaf.prev_sibling, Leaf)
-            or leaf.prev_sibling.value != "async"
-        ):
-            return COMPREHENSION_PRIORITY
-
-    if (
-        leaf.value == "if"
-        and leaf.parent
-        and leaf.parent.type in {syms.comp_if, syms.old_comp_if}
+def _check_comprehension_keyword(leaf: Leaf) -> Optional[Priority]:
+    """Check for comprehension keyword delimiters ('for', 'if', 'async')."""
+    if leaf.type == token.ASYNC and (
+        not isinstance(leaf.prev_sibling, Leaf) or leaf.prev_sibling.value != "async"
     ):
         return COMPREHENSION_PRIORITY
+    if leaf.type == token.NAME:
+        if (
+            leaf.value == "for"
+            and leaf.parent
+            and leaf.parent.type in {syms.comp_for, syms.old_comp_for}
+            and (
+                not isinstance(leaf.prev_sibling, Leaf)
+                or leaf.prev_sibling.value != "async"
+            )
+        ):
+            return COMPREHENSION_PRIORITY
+        if (
+            leaf.value == "if"
+            and leaf.parent
+            and leaf.parent.type in {syms.comp_if, syms.old_comp_if}
+        ):
+            return COMPREHENSION_PRIORITY
+    return None
 
-    if leaf.value in {"if", "else"} and leaf.parent and leaf.parent.type == syms.test:
+
+def _check_ternary_keyword(leaf: Leaf) -> Optional[Priority]:
+    """Check for ternary operator keyword delimiters ('if', 'else')."""
+    if leaf.type == token.NAME and leaf.value in {"if", "else"} and leaf.parent and leaf.parent.type == syms.test:
         return TERNARY_PRIORITY
+    return None
 
-    if leaf.value == "is":
-        return COMPARATOR_PRIORITY
 
-    if (
-        leaf.value == "in"
-        and leaf.parent
-        and leaf.parent.type in {syms.comp_op, syms.comparison}
-        and not (
-            previous is not None
-            and previous.type == token.NAME
-            and previous.value == "not"
-        )
-    ):
-        return COMPARATOR_PRIORITY
-
-    if (
-        leaf.value == "not"
-        and leaf.parent
-        and leaf.parent.type == syms.comp_op
-        and not (
-            previous is not None
-            and previous.type == token.NAME
-            and previous.value == "is"
-        )
-    ):
-        return COMPARATOR_PRIORITY
-
-    if leaf.value in LOGIC_OPERATORS and leaf.parent:
+def _check_logical_operator(leaf: Leaf) -> Optional[Priority]:
+    """Check for logical operator keyword delimiters ('and', 'or')."""
+    if leaf.type == token.NAME and leaf.value in LOGIC_OPERATORS and leaf.parent:
         return LOGIC_PRIORITY
+    return None
+
+
+def is_split_before_delimiter(leaf: Leaf, previous: Optional[Leaf] = None) -> Priority:
+    """Return the priority of the `leaf` delimiter, given a line break before it.
+
+    The delimiter priorities returned here are from those delimiters that would
+    cause a line break before themselves.
+
+    Higher numbers are higher priority.
+    Refactored for reduced complexity.
+    """
+    priority = _check_vararg(leaf)
+    if priority is not None:
+        return priority
+
+    priority = _check_dot(leaf, previous)
+    if priority is not None:
+        return priority
+
+    priority = _check_math_operator(leaf)
+    if priority is not None:
+        return priority
+
+    priority = _check_comparator(leaf, previous)
+    if priority is not None:
+        return priority
+
+    priority = _check_string_concatenation(leaf, previous)
+    if priority is not None:
+        return priority
+    
+    if leaf.type in {token.NAME, token.ASYNC}:
+        priority = _check_comprehension_keyword(leaf)
+        if priority is not None:
+            return priority
+
+        priority = _check_ternary_keyword(leaf)
+        if priority is not None:
+            return priority
+
+        priority = _check_logical_operator(leaf)
+        if priority is not None:
+            return priority
 
     return 0
 
